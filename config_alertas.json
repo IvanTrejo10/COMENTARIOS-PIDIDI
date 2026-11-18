@@ -1,0 +1,97 @@
+{
+  "_ayuda": "Las claves que empiezan con _ son notas. Si borras una opcion, se usa el valor por defecto del script.",
+  "_carpeta_pdfs": "Solo para generar_alertas.bat (la pagina web no la usa). Vacio = subcarpeta 'pdfs' junto al script o, si no existe, la misma carpeta. Escribe la ruta con diagonal normal: C:/Users/...",
+  "carpeta_pdfs": "C:/Users/progr/OneDrive/Escritorio/PDF",
+  "patron_pdf": "Avance*Cobranza*.pdf",
+  "_carpeta_salida": "Vacio = subcarpeta 'salida' junto al script.",
+  "carpeta_salida": "",
+  "abrir_al_terminar": true,
+  "_top_n": "Cuantas zonas y sucursales se mencionan en cada mensaje.",
+  "top_n": 3,
+  "_umbral_ligera_pct": "Si la variacion es menor a este % de la recuperacion de la semana anterior, dice 'ligeramente'.",
+  "umbral_ligera_pct": 0.1,
+  "_omitir_sin_movimiento": "true = un pais con todo en 0 (ej. Nicaragua) no genera mensaje.",
+  "omitir_sin_movimiento": true,
+  "_paises_excluidos": "Paises que no quieres mandar, ej. [\"Colombia\"].",
+  "paises_excluidos": [],
+  "_quitar_claves_sucursal": "true = 'Veracruz Presico P-PC' sale como 'Veracruz Presico'.",
+  "quitar_claves_sucursal": true,
+  "dpi_imagen": 150,
+  "_orden": "Orden en que salen los mensajes.",
+  "orden": [
+    "Guatemala",
+    "El Salvador",
+    "Honduras",
+    "Nicaragua",
+    "Perú",
+    "Colombia",
+    "México"
+  ],
+  "paises": {
+    "México": {
+      "bandera": "🇲🇽",
+      "moneda": "$"
+    },
+    "Guatemala": {
+      "bandera": "🇬🇹",
+      "moneda": "Q"
+    },
+    "El Salvador": {
+      "bandera": "🇸🇻",
+      "moneda": "$"
+    },
+    "Honduras": {
+      "bandera": "🇭🇳",
+      "moneda": "L"
+    },
+    "Nicaragua": {
+      "bandera": "🇳🇮",
+      "moneda": "C$"
+    },
+    "Perú": {
+      "bandera": "🇵🇪",
+      "moneda": "S/"
+    },
+    "Colombia": {
+      "bandera": "🇨🇴",
+      "moneda": "$"
+    }
+  },
+  "_acentos": "El tablero trae los nombres sin acento; aqui se corrigen palabra por palabra.",
+  "acentos": {
+    "Pacifico": "Pacífico",
+    "Peninsula": "Península",
+    "Tonala": "Tonalá",
+    "Andres": "Andrés",
+    "Martinez": "Martínez",
+    "Comitan": "Comitán",
+    "Cristobal": "Cristóbal",
+    "Escarcega": "Escárcega",
+    "Culiacan": "Culiacán",
+    "Constitucion": "Constitución",
+    "Juarez": "Juárez",
+    "Jose": "José",
+    "Siquinala": "Siquinalá",
+    "Poptun": "Poptún",
+    "Ixcan": "Ixcán",
+    "Malacatan": "Malacatán",
+    "Sayaxche": "Sayaxché",
+    "Solola": "Sololá",
+    "Tecun": "Tecún",
+    "Uman": "Umán",
+    "Usulutan": "Usulután",
+    "Ahuachapan": "Ahuachapán",
+    "Cuscatlan": "Cuscatlán",
+    "Metapan": "Metapán",
+    "Union": "Unión",
+    "Intibuca": "Intibucá",
+    "Barbara": "Bárbara",
+    "Leon": "León",
+    "Huanuco": "Huánuco",
+    "Huaycan": "Huaycán",
+    "Camana": "Camaná",
+    "Jaen": "Jaén",
+    "Cajica": "Cajicá",
+    "Ibague": "Ibagué"
+  }
+}
