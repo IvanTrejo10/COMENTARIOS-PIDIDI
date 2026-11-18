@@ -10,6 +10,8 @@ Panel local de Streamlit con la identidad visual de Estructuras RH: barra latera
 4. Revisa el corte y selecciona los países que quieres incluir.
 5. Usa **Copiar mensaje**, **Copiar imagen** o **Descargar imagen** en cada tarjeta. También puedes descargar todos los seleccionados como ZIP o TXT.
 
+En los resultados aparece primero el **saludo** del día ("Buen día, le comparto el avance de cobranza de la semana…"; con corte en domingo dice "cierre de cobranza"). Si el PDF trae la hoja Entregado, que es el de los lunes, cada país muestra además su tarjeta de **trámites**.
+
 Puedes generar una sola región. Si uno de los PDF falla, el otro se procesa de forma independiente. Se valida que cada archivo corresponda a su tarjeta. Si cambias o quitas un PDF, los resultados anteriores se ocultan hasta que vuelvas a generar.
 
 Los países sin movimiento y los excluidos en `config_alertas.json` siguen las reglas del motor original. Los PDF se procesan en una carpeta temporal; los resultados permanecen en memoria durante la sesión y la caché dura como máximo una hora. La aplicación prepara el contenido; el envío a WhatsApp se realiza manualmente.

@@ -3,10 +3,13 @@
 ALERTAS DIARIAS DE RECUPERACIÓN (México + LATAM)
 ================================================
 Lee los PDF "Avance Cobranza y Entregado ... México / LATAM" (exportados de Power BI)
-y arma, por cada país, lo que se manda por WhatsApp:
+y arma lo que se manda por WhatsApp:
 
+    0) el saludo ("Buen día, le comparto el avance de cobranza de la semana ...")
+    y por cada país:
     1) la imagen con los recuadros Bottom / Top
     2) el mensaje ("Presenta una variación negativa en recuperación de ...")
+    3) los lunes (PDF que trae la hoja Entregado): imagen y mensaje de trámites
 
 Uso
 ---
@@ -18,8 +21,9 @@ Uso
 
 Salida (carpeta salida\\AAAA-MM-DD del corte)
     alertas.html     página para revisar y copiar imagen / texto de cada país
-    mensajes.txt     todos los mensajes juntos
-    N_Pais.png/.txt  imagen y mensaje de cada país
+    mensajes.txt     el saludo y todos los mensajes juntos
+    0_saludo.txt     el saludo
+    N_Pais.png/.txt  imagen y mensaje de cada país (N_Pais_tramites.* los de trámites)
     alertas.json     lo mismo en formato máquina (para el envío automático)
 
 Requiere PyMuPDF; si falta, el script lo instala solo la primera vez (pip install "pymupdf<2").
@@ -28,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import bisect
 import datetime as dt
 import html
 import json
@@ -103,7 +108,7 @@ CONFIG_DEFECTO = {
     # True = "Veracruz Presico P-PC" -> "Veracruz Presico" (así van en los mensajes)
     "quitar_claves_sucursal": True,
     "dpi_imagen": 150,
-    "orden": ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Perú", "Colombia", "México"],
+    "orden": ["México", "Guatemala", "El Salvador", "Honduras", "Nicaragua", "Perú", "Colombia"],
     "paises": {
         "México": {"bandera": "🇲🇽", "moneda": "$"},
         "Guatemala": {"bandera": "🇬🇹", "moneda": "Q"},
@@ -150,6 +155,38 @@ FRASES = {
     "sucursal_zona_unica": "A nivel sucursal, la principal caída se presenta en {lista}.",
     "sucursales_total_positivo": "A nivel sucursal persisten disminuciones en {lista}.",
     "sucursal_total_positivo": "A nivel sucursal persiste una disminución en {lista}.",
+
+    # ── saludo que abre la conversación
+    "saludo_avance": "Buen día, le comparto el avance de cobranza de la semana {semana} {anio} correspondiente al cierre {fecha}",
+    # corte en domingo = cierre de la semana, que es lo que se manda los lunes
+    "saludo_cierre": "Buen día, le comparto el cierre de cobranza de la semana {semana} {anio} correspondiente al cierre {fecha}",
+
+    # ── trámites (hoja Entregado; solo viene en el PDF de los lunes)
+    "tram_apertura": "En trámites, registra {creditos} créditos entregados ({var_creditos}), con un desembolso de {monto} ({var_monto}).",
+    # país con una sola marca
+    "tram_marca_unica_suben": "Ambos indicadores presentan crecimiento respecto a la semana anterior, correspondiente a la marca {marca}.",
+    "tram_marca_unica_bajan": "Ambos indicadores presentan disminución respecto a la semana anterior, correspondiente a la marca {marca}.",
+    "tram_marca_unica_mixto": "Respecto a la semana anterior, los créditos {creditos} y el desembolso {monto}, correspondiente a la marca {marca}.",
+    # volumen (créditos) por marca
+    "tram_vol_sube": "El crecimiento en volumen se concentra {principalmente}en {lista}",
+    "tram_vol_sube_y_baja": ", mientras que {marca} disminuye {n} créditos",
+    "tram_vol_sube_y_bajan": ", mientras que {marcas} disminuyen {n} créditos, respectivamente",
+    "tram_vol_baja": "La disminución en volumen se concentra {principalmente}en {lista}",
+    "tram_vol_baja_y_sube": ", mientras que {marca} presenta un incremento de {n} créditos",
+    "tram_vol_baja_y_suben": ", mientras que {marcas} presentan incrementos de {n} créditos, respectivamente",
+    # desembolso por marca
+    "tram_des_suben": "En desembolso, los mayores incrementos corresponden a {lista}",
+    "tram_des_sube_una": "En desembolso, el incremento corresponde a {lista}",
+    "tram_des_ambas_suben": "En desembolso, ambas marcas registran incrementos: {lista}",
+    "tram_des_bajan": "En desembolso, las mayores disminuciones corresponden a {lista}",
+    "tram_des_baja_una": "En desembolso, la disminución corresponde a {lista}",
+    "tram_des_ambas_bajan": "En desembolso, ambas marcas registran disminuciones: {lista}",
+    # pocas marcas, unas suben y otras bajan: se dice qué hizo cada una
+    "tram_des_gana_la_subida": "En desembolso, {suben}, compensando {bajan}",
+    "tram_des_gana_la_bajada": "En desembolso, {suben}, pero {bajan}",
+    # muchas marcas: solo se menciona la contraria si pesa
+    "tram_des_y_baja": ", mientras que {marca} disminuye {monto}",
+    "tram_des_y_sube": ", mientras que {marca} aumenta {monto}",
 }
 
 
@@ -252,6 +289,26 @@ class Fila:
 
 
 @dataclass
+class MarcaEntregado:
+    nombre: str
+    creditos: float = 0.0      # Entregado Crédito: Créditos
+    var_creditos: float = 0.0  # Entregado Crédito: Var Sem Ant
+    monto: float = 0.0         # Entregado Monto: Desembolso
+    var_monto: float = 0.0     # Entregado Monto: Var sem ant
+
+
+@dataclass
+class Entregado:
+    """Hoja de trámites (tablas Entregado Monto y Entregado Crédito), última semana."""
+    pagina: int                                  # base 1
+    semana: Optional[int] = None
+    marcas: list = field(default_factory=list)   # MarcaEntregado, sin el Total
+    total: Optional[MarcaEntregado] = None
+    recorte: object = None                       # rectángulo con las dos tablas para la imagen
+    avisos: list = field(default_factory=list)
+
+
+@dataclass
 class Pais:
     nombre: str
     archivo: str
@@ -262,6 +319,8 @@ class Pais:
     sucursales: list = field(default_factory=list)  # Bottom + Top, sin repetir
     recorte: object = None                          # rectángulo Bottom+Top para la imagen
     avisos: list = field(default_factory=list)
+    semana: Optional[int] = None                    # semana en curso (tabla Trámites Total)
+    entregado: Optional[Entregado] = None           # hoja de trámites, si el PDF la trae
 
 
 TIPOS_TABLA = {"zona", "sucursal", "marca", "territorio", "subdireccion"}
@@ -362,8 +421,159 @@ def _filas_tabla(pals: list[Palabra], t: Titulo, vecinos: list[Titulo], x_max: f
     return filas, incompletas
 
 
+# ── hojas que siguen a la de Recuperación de cada país ─────────────────────────────────────
+def _renglones(pals: list[Palabra]) -> list[list[Palabra]]:
+    """Agrupa las palabras por renglón; cada renglón va ordenado de izquierda a derecha."""
+    out: list[list[Palabra]] = []
+    for p in sorted(pals, key=lambda p: (p.cy, p.x0)):
+        if out and abs(p.cy - out[-1][0].cy) <= 3.0:
+            out[-1].append(p)
+        else:
+            out.append([p])
+    for r in out:
+        r.sort(key=lambda p: p.x0)
+    return out
+
+
+def _titulo_doble(pals: list[Palabra], primera: str, segunda: str):
+    """Título de dos palabras ('Trámites Total', 'Entregado Monto'). Devuelve (palabra1, palabra2) o None."""
+    for a in pals:
+        if sin_acentos(a.txt) == primera:
+            for b in pals:
+                if (b is not a and abs(b.y0 - a.y0) < 2.5 and 0 <= b.x0 - a.x1 < 0.8 * (a.y1 - a.y0)
+                        and sin_acentos(b.txt) == segunda):
+                    return a, b
+    return None
+
+
+def _semana_en_curso(pals: list[Palabra]) -> Optional[int]:
+    """Última semana de la tabla 'Trámites Total' (hoja Trámites/Efectividad): la semana del corte."""
+    tit = _titulo_doble(pals, "tramites", "total")
+    if tit is None:
+        return None
+    a = tit[0]
+    semana = None
+    for r in _renglones([p for p in pals if p.cy > a.y1]):
+        if sin_acentos(r[0].txt) == "tramites":  # título de la tabla siguiente
+            break
+        if (r[0].x0 < a.x0 - 50 and re.fullmatch(r"\d{1,2}", r[0].txt) and 1 <= int(r[0].txt) <= 53
+                and len(r) >= 3 and a_numero(r[1].txt) is not None):
+            semana = int(r[0].txt)
+    return semana
+
+
+def _celdas(palabras: list[Palabra], alto: float, inicios: tuple = ()) -> list:
+    """Junta las palabras de un renglón de encabezado en celdas -> [[texto, x0, x1], ...]"""
+    celdas: list = []
+    for p in palabras:
+        if not celdas or p.x0 - celdas[-1][2] >= 0.45 * alto or sin_acentos(p.txt) in inicios:
+            celdas.append([p.txt, p.x0, p.x1])
+        else:
+            celdas[-1][0] += " " + p.txt
+            celdas[-1][2] = p.x1
+    return celdas
+
+
+def _matriz_entregado(pals: list[Palabra], titulo):
+    """Lee la tabla que está bajo un título 'Entregado ...': por marca, valor y variación de cada semana.
+
+    Devuelve (marcas, ultima, semana, caja) o None si no reconoce la tabla:
+      marcas  nombres en el orden de la tabla (el último es 'Total')
+      ultima  {marca: (valor, variación)} de la última semana; vacío si la tabla no trae datos
+      semana  número de esa última semana
+      caja    (x0, y0, x1, y1) de la tabla con su título
+    """
+    a, b = titulo
+    alto = a.y1 - a.y0
+    abajo = _renglones([p for p in pals if p.cy > max(a.y1, b.y1)])
+    i = next((k for k, r in enumerate(abajo) if sin_acentos(r[0].txt) == "marca"), None)
+    if (i is None or abajo[i][0].cy - a.cy > 4 * alto or i + 1 >= len(abajo)
+            or sin_acentos(abajo[i + 1][0].txt) != "ano"):
+        return None
+    marcas = [c[0] for c in _celdas(abajo[i][1:], alto)]
+    medidas = _celdas(abajo[i + 1][1:], alto, inicios=("desembolso", "creditos", "var"))
+    if not marcas or len(medidas) != 2 * len(marcas):
+        return None
+    centros = [(c[1] + c[2]) / 2 for c in medidas]  # los valores van alineados a la derecha de su columna
+
+    usadas = abajo[i] + abajo[i + 1]
+    ultima, semana = {}, None
+    for r in abajo[i + 2:]:
+        nums = [a_numero(p.txt) for p in r]
+        if any(n is None for n in nums):
+            break  # ya no es la tabla
+        usadas = usadas + r
+        if len(r) == 1:
+            continue  # renglón del año
+        fila, etiqueta = {}, None
+        for p, n in zip(r, nums):
+            col = bisect.bisect_right(centros, p.x1) - 1
+            if col < 0:
+                etiqueta = int(n)  # columna Año: número de semana
+            else:
+                fila[col] = n
+        if fila:
+            ultima = {m: (fila.get(2 * k), fila.get(2 * k + 1)) for k, m in enumerate(marcas)}
+            semana = etiqueta
+    caja = (min(p.x0 for p in usadas + [a]), a.y0, max(p.x1 for p in usadas + [b]), max(p.y1 for p in usadas))
+    return marcas, ultima, semana, caja
+
+
+def _leer_entregado(page, pals: list[Palabra], pagina: int) -> Optional[Entregado]:
+    """Hoja de trámites (Entregado Monto + Entregado Crédito). None si la página no es esa hoja."""
+    t_monto = _titulo_doble(pals, "entregado", "monto")
+    t_cred = _titulo_doble(pals, "entregado", "credito")
+    if t_monto is None or t_cred is None:
+        return None
+    ent = Entregado(pagina)
+    monto, cred = _matriz_entregado(pals, t_monto), _matriz_entregado(pals, t_cred)
+    if monto is None or cred is None:
+        ent.avisos.append("No pude leer las tablas Entregado Monto / Entregado Crédito.")
+        return ent
+
+    # Imagen: las dos tablas con su barra de título (la barra es un poco más ancha que la tabla)
+    cajas = [monto[3], cred[3]]
+    dibujos = page.get_drawings()
+    for a, b in (t_monto, t_cred):
+        cajas += [tuple(d["rect"]) for d in dibujos
+                  if d.get("fill") and d["rect"].height < 3 * (a.y1 - a.y0)
+                  and d["rect"].x0 <= a.x0 and d["rect"].x1 >= b.x1 and d["rect"].y0 <= a.cy <= d["rect"].y1]
+    derecha = min(max(c[2] for c in cajas), max(monto[3][2], cred[3][2]) + 30)  # sin la cola de la barra
+    ent.recorte = (min(c[0] for c in cajas) - 8, min(c[1] for c in cajas) - 8,
+                   derecha + 8, max(c[3] for c in cajas) + 10)
+
+    marcas, ult_c, sem_c, _ = cred
+    marcas_m, ult_m, sem_m, _ = monto
+    ent.semana = sem_c or sem_m
+    if not ult_c or not ult_m:
+        return ent  # la hoja viene sin datos (p. ej. Nicaragua)
+    por_marca_m = {sin_acentos(k): v for k, v in ult_m.items()}
+    if [sin_acentos(x) for x in marcas] != [sin_acentos(x) for x in marcas_m]:
+        ent.avisos.append("Entregado Monto y Entregado Crédito no traen las mismas marcas.")
+    if sem_c != sem_m:
+        ent.avisos.append(f"Entregado Crédito llega a la semana {sem_c} y Entregado Monto a la {sem_m}.")
+    for nombre in marcas:
+        cr, dcr = ult_c.get(nombre, (None, None))
+        mo, dmo = por_marca_m.get(sin_acentos(nombre), (None, None))
+        m = MarcaEntregado(nombre, cr or 0.0, dcr or 0.0, mo or 0.0, dmo or 0.0)
+        if sin_acentos(nombre) == "total":
+            ent.total = m
+        else:
+            ent.marcas.append(m)
+    if ent.total and ent.marcas:
+        tol = len(ent.marcas) + 1
+        if (abs(sum(m.var_creditos for m in ent.marcas) - ent.total.var_creditos) > tol
+                or abs(sum(m.var_monto for m in ent.marcas) - ent.total.var_monto) > tol):
+            ent.avisos.append("La suma por marca no da el total de la hoja de trámites.")
+    return ent
+
+
 def leer_pdf(ruta: Path) -> list[Pais]:
-    """Devuelve un Pais por cada página de 'Recuperación' (las de Trámites/Efectividad se saltan)."""
+    """Devuelve un Pais por cada página de 'Recuperación'.
+
+    Las hojas que siguen a cada una (Trámites/Efectividad y, los lunes, Entregado) no traen el
+    nombre del país: su semana en curso y sus trámites se le cargan al país de la hoja anterior.
+    """
     paises = []
     doc = pymupdf.open(str(ruta))
     for i, page in enumerate(doc):
@@ -371,7 +581,12 @@ def leer_pdf(ruta: Path) -> list[Pais]:
         tits = _titulos(pals)
         secciones = _secciones(page, pals, tits)
         if secciones is None:
-            continue  # página de Trámites / Efectividad
+            if paises:  # hoja de Trámites/Efectividad o de Entregado del último país leído
+                if paises[-1].semana is None:
+                    paises[-1].semana = _semana_en_curso(pals)
+                if paises[-1].entregado is None:
+                    paises[-1].entregado = _leer_entregado(page, pals, i + 1)
+            continue
         rojo, azul, exacto = secciones
 
         avisos = []
@@ -439,10 +654,11 @@ def leer_pdf(ruta: Path) -> list[Pais]:
     return paises
 
 
-def guardar_imagen(ruta_pdf: Path, pais: Pais, destino: Path, dpi: int) -> None:
+def guardar_imagen(ruta_pdf: Path, pagina: int, recorte, destino: Path, dpi: int) -> None:
+    """Guarda en PNG el recorte (x0, y0, x1, y1) de la página (base 1)."""
     doc = pymupdf.open(str(ruta_pdf))
-    page = doc[pais.pagina - 1]
-    clip = pymupdf.Rect(*pais.recorte) & page.rect
+    page = doc[pagina - 1]
+    clip = pymupdf.Rect(*recorte) & page.rect
     page.get_pixmap(clip=clip, dpi=dpi, alpha=False).save(str(destino))
     doc.close()
 
@@ -528,6 +744,140 @@ def redactar(pais: Pais, cfg: dict) -> tuple[Optional[str], str]:
     return encabezado + "\n" + " ".join(partes), ""
 
 
+def redactar_saludo(corte: dt.date, semana: int) -> str:
+    """Saludo que abre la conversación. Corte en domingo = cierre de la semana (se manda el lunes)."""
+    anio = corte.year
+    if semana >= 52 and corte.month == 1:
+        anio -= 1
+    elif semana == 1 and corte.month == 12:
+        anio += 1
+    clave = "saludo_cierre" if corte.weekday() == 6 else "saludo_avance"
+    return FRASES[clave].format(semana=semana, anio=anio, fecha=corte.strftime("%d/%m/%Y"))
+
+
+def redactar_tramites(pais: Pais, cfg: dict) -> tuple[Optional[str], str]:
+    """Mensaje de trámites (hoja Entregado). Devuelve (mensaje, motivo), igual que redactar()."""
+    ent = pais.entregado
+    if ent is None:
+        return None, "el PDF no trae la hoja de trámites"
+    if sin_acentos(pais.nombre) in {sin_acentos(x) for x in cfg["paises_excluidos"]}:
+        return None, "excluido en la configuración"
+    tot, marcas = ent.total, ent.marcas
+    if tot is None or not marcas:
+        return None, "la hoja de trámites viene sin datos"
+    if cfg["omitir_sin_movimiento"] and not any(
+            round(v) for v in (tot.creditos, tot.var_creditos, tot.monto, tot.var_monto)):
+        return None, "sin trámites, todo en 0"
+
+    info = next((v for k, v in cfg["paises"].items() if sin_acentos(k) == sin_acentos(pais.nombre)),
+                {"bandera": "", "moneda": "$"})
+    moneda, top_n = info["moneda"], int(cfg["top_n"])
+
+    def _signo(v: float, n: int, con_signo: bool) -> str:
+        return ("-" if v < 0 and n else "+" if v > 0 and n else "") if con_signo else ""
+
+    def din(v: float, signo: bool = True) -> str:  # dinero: -Q19,200
+        n = int(round(abs(v)))
+        return f"{_signo(v, n, signo)}{moneda}{n:,}"
+
+    def num(v: float, signo: bool = True) -> str:  # créditos: +2,070
+        n = int(round(abs(v)))
+        return f"{_signo(v, n, signo)}{n:,}"
+
+    def nom(m: MarcaEntregado) -> str:
+        return " ".join(cfg["acentos"].get(w, w) for w in m.nombre.split())
+
+    d_cred, d_monto = int(round(tot.var_creditos)), int(round(tot.var_monto))
+    partes = [FRASES["tram_apertura"].format(
+        creditos=num(tot.creditos, signo=False), var_creditos=num(tot.var_creditos) if d_cred else "sin cambio",
+        monto=din(tot.monto, signo=False), var_monto=din(tot.var_monto) if d_monto else "sin cambio")]
+
+    if len(marcas) == 1:
+        if d_cred > 0 and d_monto > 0:
+            partes.append(FRASES["tram_marca_unica_suben"].format(marca=nom(marcas[0])))
+        elif d_cred < 0 and d_monto < 0:
+            partes.append(FRASES["tram_marca_unica_bajan"].format(marca=nom(marcas[0])))
+        else:
+            def verbo(d: int, plural: bool) -> str:
+                v = "aumenta" if d > 0 else "disminuye" if d < 0 else "se mantiene"
+                return v + "n" if plural else v
+            partes.append(FRASES["tram_marca_unica_mixto"].format(
+                creditos=verbo(d_cred, True), monto=verbo(d_monto, False), marca=nom(marcas[0])))
+    else:
+        muchas = len(marcas) > top_n  # con muchas marcas (México) solo se nombran las principales
+
+        def contrarias(lista: list, valor, principal: float) -> list:
+            """Las que van en sentido contrario: todas si son pocas marcas; si son muchas, solo las de peso."""
+            if not muchas:
+                return lista
+            return [m for m in lista if abs(valor(m)) >= 0.25 * abs(principal)][:2]
+
+        # ── volumen (créditos)
+        sube = sorted((m for m in marcas if round(m.var_creditos) > 0), key=lambda m: -m.var_creditos)
+        baja = sorted((m for m in marcas if round(m.var_creditos) < 0), key=lambda m: m.var_creditos)
+        if d_cred >= 0 and sube:
+            txt = FRASES["tram_vol_sube"].format(
+                principalmente="principalmente " if len(sube) > top_n else "",
+                lista=lista_es([f"{nom(m)} ({num(m.var_creditos)})" for m in sube[:top_n]]))
+            otras = contrarias(baja, lambda m: m.var_creditos, sube[0].var_creditos)
+            if len(otras) == 1:
+                txt += FRASES["tram_vol_sube_y_baja"].format(
+                    marca=nom(otras[0]), n=num(otras[0].var_creditos, signo=False))
+            elif otras:
+                txt += FRASES["tram_vol_sube_y_bajan"].format(
+                    marcas=lista_es([nom(m) for m in otras]),
+                    n=lista_es([num(m.var_creditos, signo=False) for m in otras]))
+            partes.append(txt + ".")
+        elif d_cred < 0 and baja:
+            txt = FRASES["tram_vol_baja"].format(
+                principalmente="principalmente " if len(baja) > top_n else "",
+                lista=lista_es([f"{nom(m)} ({num(m.var_creditos)} créditos)" for m in baja[:top_n]]))
+            otras = contrarias(sube, lambda m: m.var_creditos, baja[0].var_creditos)
+            if len(otras) == 1:
+                txt += FRASES["tram_vol_baja_y_sube"].format(
+                    marca=nom(otras[0]), n=num(otras[0].var_creditos, signo=False))
+            elif otras:
+                txt += FRASES["tram_vol_baja_y_suben"].format(
+                    marcas=lista_es([nom(m) for m in otras]),
+                    n=lista_es([num(m.var_creditos, signo=False) for m in otras]))
+            partes.append(txt + ".")
+
+        # ── desembolso
+        sube = sorted((m for m in marcas if round(m.var_monto) > 0), key=lambda m: -m.var_monto)
+        baja = sorted((m for m in marcas if round(m.var_monto) < 0), key=lambda m: m.var_monto)
+
+        def cada_una(ms: list, verbo: str) -> str:  # "Pistiyo crece Q168,650 y La Casita Q71,050"
+            return lista_es([f"{nom(m)} {verbo} {din(m.var_monto, signo=False)}" if k == 0
+                             else f"{nom(m)} {din(m.var_monto, signo=False)}" for k, m in enumerate(ms)])
+
+        if sube and baja and not muchas:
+            if d_monto >= 0:
+                bajan = ("la disminución de " if len(baja) == 1 else "las disminuciones de ") + lista_es(
+                    [f"{din(m.var_monto)} en {nom(m)}" for m in baja])
+                txt = FRASES["tram_des_gana_la_subida"].format(suben=cada_una(sube, "aumenta"), bajan=bajan)
+            else:
+                txt = FRASES["tram_des_gana_la_bajada"].format(
+                    suben=cada_una(sube, "crece"), bajan=cada_una(baja, "disminuye"))
+            partes.append(txt + ".")
+        elif sube or baja:
+            arriba = bool(sube) and (not baja or d_monto >= 0)
+            ms = sube if arriba else baja
+            if len(marcas) == 2 and len(ms) == 2:
+                clave = "tram_des_ambas_suben" if arriba else "tram_des_ambas_bajan"
+            elif len(ms) == 1:
+                clave = "tram_des_sube_una" if arriba else "tram_des_baja_una"
+            else:
+                clave = "tram_des_suben" if arriba else "tram_des_bajan"
+            txt = FRASES[clave].format(lista=lista_es([f"{nom(m)} ({din(m.var_monto)})" for m in ms[:top_n]]))
+            for m in contrarias(baja if arriba else sube, lambda m: m.var_monto, ms[0].var_monto)[:1]:
+                txt += FRASES["tram_des_y_baja" if arriba else "tram_des_y_sube"].format(
+                    marca=nom(m), monto=din(m.var_monto, signo=False))
+            partes.append(txt + ".")
+
+    encabezado = f"{pais.nombre} {info['bandera']}".strip()
+    return encabezado + "\n" + " ".join(partes), ""
+
+
 # ════════════════════════════════════════════════════════════════════════════
 #  PÁGINA DE REVISIÓN
 # ════════════════════════════════════════════════════════════════════════════
@@ -553,8 +903,8 @@ PAGINA = """<!doctype html>
   article { background: var(--tarjeta); border: 1px solid var(--linea); border-radius: 14px;
             display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); overflow: hidden; }
   @media (max-width: 860px) { article { grid-template-columns: 1fr; } }
-  .img { background: #fff; border-right: 1px solid var(--linea); display: flex; align-items: center; }
-  .img img { width: 100%; height: auto; display: block; }
+  .img { background: #fff; border-right: 1px solid var(--linea); display: flex; align-items: center; justify-content: center; }
+  .img img { max-width: 100%; max-height: 300px; width: auto; height: auto; display: block; }
   .txt { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
   .txt pre { margin: 0; white-space: pre-wrap; word-wrap: break-word; font: inherit; flex: 1; }
   .txt pre::first-line { font-weight: 650; font-size: 16px; }
@@ -565,6 +915,8 @@ PAGINA = """<!doctype html>
   @media (prefers-color-scheme: dark) { button { color: #0d1117; } button.sec { color: var(--acento); } }
   button.listo { background: var(--ok); border-color: var(--ok); color: #fff; }
   .pista { font-size: 12.5px; color: var(--tenue); }
+  article.solo { grid-template-columns: 1fr; }
+  article.solo pre::first-line { font-weight: inherit; font-size: inherit; }
 </style></head><body>
 <header>
   <h1>Alertas de recuperación · Corte __CORTE__</h1>
@@ -572,6 +924,7 @@ PAGINA = """<!doctype html>
 </header>
 <main>
 __NOTAS__
+__SALUDO__
 __TARJETAS__
 </main>
 <script>
@@ -606,12 +959,21 @@ async function copiarImagen(id, btn) {
 """
 
 
-def armar_pagina(alertas: list[dict], omitidos: list[str], avisos: list[str], corte_txt: str, fuentes: list[str]) -> str:
+def armar_pagina(alertas: list[dict], omitidos: list[str], avisos: list[str], corte_txt: str,
+                 fuentes: list[str], saludo: str = "") -> str:
+    tarjeta_saludo = ""
+    if saludo:
+        tarjeta_saludo = (
+            f'<article class="solo"><div class="txt"><pre id="txt0">{html.escape(saludo)}</pre>'
+            f'<div class="bot"><button onclick="copiarTexto(\'txt0\', this)">Copiar texto</button>'
+            f'<span class="pista">Saludo: se manda primero.</span></div></div></article>'
+        )
     tarjetas = []
     for n, a in enumerate(alertas, 1):
         b64 = base64.b64encode(Path(a["imagen_ruta"]).read_bytes()).decode("ascii")
+        que = "Tablas de trámites de" if a.get("tipo") == "tramites" else "Bottom y Top de"
         tarjetas.append(
-            f'<article><div class="img"><img id="img{n}" alt="Bottom y Top de {html.escape(a["pais"])}" '
+            f'<article><div class="img"><img id="img{n}" alt="{que} {html.escape(a["pais"])}" '
             f'src="data:image/png;base64,{b64}"></div>'
             f'<div class="txt"><pre id="txt{n}">{html.escape(a["mensaje"])}</pre>'
             f'<div class="bot"><button onclick="copiarImagen(\'img{n}\', this)">Copiar imagen</button>'
@@ -624,7 +986,8 @@ def armar_pagina(alertas: list[dict], omitidos: list[str], avisos: list[str], co
         notas = f'<div class="nota"><b>Notas de esta corrida</b><ul>{li}</ul></div>'
     resumen = f"{len(alertas)} mensajes · " + " + ".join(html.escape(f) for f in fuentes)
     return (PAGINA.replace("__CORTE__", html.escape(corte_txt)).replace("__RESUMEN__", resumen)
-            .replace("__NOTAS__", notas).replace("__TARJETAS__", "\n".join(tarjetas)))
+            .replace("__NOTAS__", notas).replace("__SALUDO__", tarjeta_saludo)
+            .replace("__TARJETAS__", "\n".join(tarjetas)))
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -657,19 +1020,24 @@ def cargar_config(ruta: Optional[Path] = None) -> dict:
 def buscar_pdfs(cfg: dict) -> list[Path]:
     """Los PDF del corte más reciente.
 
-    Sin carpeta_pdfs en la configuración se buscan en la subcarpeta "pdfs" (si existe) o, si no,
-    en la misma carpeta donde está este script.
+    Sin carpeta_pdfs en la configuración se buscan en la subcarpeta "pdfs" y en la misma carpeta
+    donde está este script.
     """
     if cfg["carpeta_pdfs"]:
-        carpeta = Path(cfg["carpeta_pdfs"])
+        carpetas = [Path(cfg["carpeta_pdfs"])]
+        if not carpetas[0].is_dir():
+            raise ErrorAlertas(f"No existe la carpeta de PDF: {carpetas[0]}\n"
+                               "Corrige carpeta_pdfs en config_alertas.json o arrastra los PDF sobre generar_alertas.bat.")
     else:
-        carpeta = AQUI / "pdfs" if (AQUI / "pdfs").is_dir() else AQUI
-    if not carpeta.is_dir():
-        raise ErrorAlertas(f"No existe la carpeta de PDF: {carpeta}\n"
-                           "Corrige carpeta_pdfs en config_alertas.json o arrastra los PDF sobre generar_alertas.bat.")
-    candidatos = [p for p in carpeta.glob(cfg["patron_pdf"]) if p.is_file()]
+        carpetas = [c for c in (AQUI / "pdfs", AQUI) if c.is_dir()]
+    candidatos, vistos = [], set()
+    for carpeta in carpetas:
+        for p in sorted(carpeta.glob(cfg["patron_pdf"])):
+            if p.is_file() and p.name not in vistos:
+                vistos.add(p.name)
+                candidatos.append(p)
     if not candidatos:
-        raise ErrorAlertas(f"No hay PDF '{cfg['patron_pdf']}' en {carpeta}\n"
+        raise ErrorAlertas(f"No hay PDF '{cfg['patron_pdf']}' en " + " ni en ".join(str(c) for c in carpetas) + "\n"
                            "Pon ahí los PDF del día o arrástralos sobre generar_alertas.bat.")
 
     def fecha(p: Path) -> dt.date:
@@ -691,8 +1059,11 @@ def procesar(rutas: list, cfg: dict, salida: Path, por_fecha: bool = True, con_p
     por_fecha   True = guarda en salida/AAAA-MM-DD (fecha del corte); False = directo en salida
     con_pagina  True = además arma alertas.html
 
-    Devuelve un dict con: corte_txt, carpeta, pagina, lecturas [(archivo, páginas)], alertas, omitidos, avisos.
-    Cada alerta trae: orden, pais, corte, mensaje, imagen, imagen_ruta, archivo, pagina, variacion_total.
+    Devuelve un dict con: corte_txt, semana, saludo, carpeta, pagina, lecturas [(archivo, páginas)],
+    alertas, omitidos, avisos. Las alertas van en el orden en que se mandan (por país: recuperación
+    y, si el PDF trae la hoja Entregado, trámites) y cada una trae: orden, tipo ("recuperacion" o
+    "tramites"), pais, corte, mensaje, imagen, imagen_ruta, archivo, pagina, variacion_total (en
+    recuperación, la variación total; en trámites, la variación de créditos) y resumen.
     """
     rutas = [Path(r) for r in rutas]
     faltan = [str(p) for p in rutas if not p.is_file()]
@@ -723,39 +1094,70 @@ def procesar(rutas: list, cfg: dict, salida: Path, por_fecha: bool = True, con_p
         if viejo.is_file() and re.fullmatch(r"\d+_.+\.(png|txt)", viejo.name):
             viejo.unlink()
 
-    # ── redactar + imágenes
+    # ── saludo: la semana es la que trae el PDF (tabla Trámites Total); si no la trae, la del
+    #    nombre del archivo ("Sem 47"); y si tampoco, la del calendario.
+    del_corte = [(r, p) for r, p in paises if p.corte == corte] or paises
+    semanas = [p.semana for _, p in del_corte if p.semana]
+    if semanas:
+        semana = max(set(semanas), key=semanas.count)
+    else:
+        m = re.search(r"Sem[ _.-]*(\d{1,2})(?!\d)", " ".join(r.name for r, _ in del_corte), re.I)
+        semana = int(m.group(1)) if m else corte.isocalendar()[1]
+    saludo = redactar_saludo(corte, semana)
+    (salida / "0_saludo.txt").write_text(saludo, encoding="utf-8")
+
+    # ── redactar + imágenes (por país: recuperación y, si viene la hoja Entregado, trámites)
     alertas, omitidos, avisos = [], [], []
     if len(cortes) > 1:
-        avisos.append("Los PDF traen fechas de corte distintas: " + ", ".join(c.strftime("%d/%m/%Y") for c in cortes))
+        avisos.append("Los PDF traen fechas de corte distintas (" + ", ".join(c.strftime("%d/%m/%Y") for c in cortes)
+                      + "); el saludo usa la más reciente.")
     for ruta, p in paises:
         mensaje, motivo = redactar(p, cfg)
+        tramites, motivo_t = redactar_tramites(p, cfg)
         avisos += [f"{p.nombre}: {a}" for a in p.avisos]
+        if p.entregado is not None:
+            avisos += [f"{p.nombre} (trámites): {a}" for a in p.entregado.avisos]
         if mensaje is None:
             omitidos.append(f"{p.nombre}: no se generó mensaje ({motivo}).")
-            continue
-        n = len(alertas) + 1
-        raiz = f"{n}_{nombre_archivo(p.nombre)}"
-        img = salida / f"{raiz}.png"
-        guardar_imagen(ruta, p, img, int(cfg["dpi_imagen"]))
-        (salida / f"{raiz}.txt").write_text(mensaje, encoding="utf-8")
-        alertas.append({"orden": n, "pais": p.nombre,
-                        "corte": p.corte.strftime("%d/%m/%Y") if p.corte else corte_txt,
-                        "mensaje": mensaje, "imagen": img.name, "imagen_ruta": str(img),
-                        "archivo": p.archivo, "pagina": p.pagina,
-                        "variacion_total": int(round(p.total.var))})
+        elif tramites is None and p.entregado is not None:
+            omitidos.append(f"{p.nombre}: sin mensaje de trámites ({motivo_t}).")
 
-    (salida / "mensajes.txt").write_text("\n\n".join(a["mensaje"] for a in alertas) + "\n", encoding="utf-8")
+        partes = []  # (tipo, mensaje, página, recorte, variación que resume la tarjeta, resumen para la consola)
+        if mensaje is not None:
+            v = int(round(p.total.var))
+            partes.append(("recuperacion", mensaje, p.pagina, p.recorte, v, f"{v:+,}"))
+        if tramites is not None:
+            t = p.entregado.total
+            v = int(round(t.var_creditos))
+            partes.append(("tramites", tramites, p.entregado.pagina, p.entregado.recorte, v,
+                           f"{int(round(t.creditos)):,} créditos ({v:+,})"))
+        for tipo, texto, pag, recorte, variacion, resumen in partes:
+            n = len(alertas) + 1
+            raiz = f"{n}_{nombre_archivo(p.nombre)}" + ("_tramites" if tipo == "tramites" else "")
+            img = salida / f"{raiz}.png"
+            guardar_imagen(ruta, pag, recorte, img, int(cfg["dpi_imagen"]))
+            (salida / f"{raiz}.txt").write_text(texto, encoding="utf-8")
+            alertas.append({"orden": n, "tipo": tipo, "pais": p.nombre,
+                            "corte": p.corte.strftime("%d/%m/%Y") if p.corte else corte_txt,
+                            "mensaje": texto, "imagen": img.name, "imagen_ruta": str(img),
+                            "archivo": p.archivo, "pagina": pag,
+                            "variacion_total": variacion, "resumen": resumen})
+
+    (salida / "mensajes.txt").write_text(
+        "\n\n".join([saludo] + [a["mensaje"] for a in alertas]) + "\n", encoding="utf-8")
     pagina = None
     if con_pagina:
         pagina = salida / "alertas.html"
-        pagina.write_text(armar_pagina(alertas, omitidos, avisos, corte_txt, [r.name for r in rutas]), encoding="utf-8")
+        pagina.write_text(armar_pagina(alertas, omitidos, avisos, corte_txt, [r.name for r in rutas], saludo),
+                          encoding="utf-8")
     (salida / "alertas.json").write_text(json.dumps(
-        {"corte": corte_txt, "generado": dt.datetime.now().isoformat(timespec="seconds"),
+        {"corte": corte_txt, "semana": semana, "saludo": saludo,
+         "generado": dt.datetime.now().isoformat(timespec="seconds"),
          "alertas": [{k: v for k, v in a.items() if k != "imagen_ruta"} for a in alertas],
          "omitidos": omitidos, "avisos": avisos}, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    return {"corte_txt": corte_txt, "carpeta": salida, "pagina": pagina, "lecturas": lecturas,
-            "alertas": alertas, "omitidos": omitidos, "avisos": avisos}
+    return {"corte_txt": corte_txt, "semana": semana, "saludo": saludo, "carpeta": salida, "pagina": pagina,
+            "lecturas": lecturas, "alertas": alertas, "omitidos": omitidos, "avisos": avisos}
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -785,8 +1187,9 @@ def main() -> int:
 
     for nombre, n in res["lecturas"]:
         print(f"{nombre}: {n} página(s) de recuperación")
+    print(f"  {res['saludo']}")
     for a in res["alertas"]:
-        print(f"  + {a['pais']}: {a['variacion_total']:+,}")
+        print(f"  + {a['pais']}{' (trámites)' if a['tipo'] == 'tramites' else ''}: {a['resumen']}")
     for o in res["omitidos"]:
         print(f"  - {o}")
     for a in res["avisos"]:

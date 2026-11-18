@@ -61,7 +61,7 @@ def generar(region: str, nombre: str, datos: bytes, cfg_json: str) -> dict:
         for alerta in res["alertas"]:
             alerta["png"] = Path(alerta.pop("imagen_ruta")).read_bytes()
             alerta["region"] = region
-    return {k: res[k] for k in ("corte_txt", "alertas", "lecturas", "omitidos", "avisos")}
+    return {k: res[k] for k in ("corte_txt", "saludo", "alertas", "lecturas", "omitidos", "avisos")}
 
 
 def merge_results(results: list[dict]) -> dict:
@@ -71,16 +71,28 @@ def merge_results(results: list[dict]) -> dict:
             merged[key].extend(result[key])
     merged["avisos"] = list(dict.fromkeys(merged["avisos"]))
     merged["cortes"] = sorted({a["corte"] for a in merged["alertas"]}, key=lambda c: c.split("/")[::-1])
+    # El saludo es uno solo para toda la conversación: el del corte más reciente.
+    cortes = {r["corte_txt"] for r in results}
+    reciente = max(results, key=lambda r: r["corte_txt"].split("/")[::-1]) if results else {}
+    merged["saludo"], merged["saludo_corte"] = reciente.get("saludo", ""), reciente.get("corte_txt", "")
+    if len(cortes) > 1:
+        merged["avisos"].append("México y LATAM traen fechas de corte distintas ("
+                                + ", ".join(sorted(cortes, key=lambda c: c.split("/")[::-1]))
+                                + "); el saludo usa la más reciente.")
     return merged
 
 
-def bundle(alertas: list[dict]) -> tuple[bytes, str]:
-    mensajes = "\n\n".join(a["mensaje"] for a in alertas) + "\n"
+def bundle(alertas: list[dict], saludo: str = "") -> tuple[bytes, str]:
+    mensajes = "\n\n".join(([saludo] if saludo else []) + [a["mensaje"] for a in alertas]) + "\n"
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archivo:
+        if saludo:
+            archivo.writestr("00_saludo.txt", saludo)
         for n, alerta in enumerate(alertas, 1):
             # Prefijo único incluso cuando ambos PDF usan el mismo orden interno.
             raiz = f"{n:02d}_{motor.nombre_archivo(alerta['pais'])}_{alerta['corte'].replace('/', '-')}"
+            if alerta.get("tipo") == "tramites":
+                raiz += "_tramites"
             archivo.writestr(raiz + ".png", alerta["png"])
             archivo.writestr(raiz + ".txt", alerta["mensaje"])
         archivo.writestr("mensajes.txt", mensajes)
@@ -89,19 +101,38 @@ def bundle(alertas: list[dict]) -> tuple[bytes, str]:
 
 def mostrar_tarjeta(alerta: dict) -> None:
     variacion = alerta["variacion_total"]
-    moneda = motor.CONFIG_DEFECTO["paises"].get(alerta["pais"], {}).get("moneda", "$")
+    tramites = alerta.get("tipo") == "tramites"  # hoja Entregado: la variación es de créditos, sin moneda
+    moneda = "" if tramites else motor.CONFIG_DEFECTO["paises"].get(alerta["pais"], {}).get("moneda", "$")
     signo = "−" if variacion < 0 else "+" if variacion > 0 else ""
+    pais = html.escape(alerta["pais"])
+    rotulos = dict(rotulo_variacion="Variación en créditos",
+                   rotulo_imagen="IMAGEN DEL REPORTE · ENTREGADO MONTO / CRÉDITO",
+                   alt=f"Tablas Entregado Monto y Entregado Crédito de {pais}",
+                   descarga=f"{pais}_tramites.png", modo="tramites") if tramites else {}
     contenido = ui.result_card(
-        pais=html.escape(alerta["pais"]), corte=html.escape(alerta["corte"]),
+        pais=pais, corte=html.escape(alerta["corte"]),
         archivo=html.escape(alerta["archivo"]), pagina=int(alerta["pagina"]),
         mensaje=html.escape(alerta["mensaje"]), imagen=base64.b64encode(alerta["png"]).decode("ascii"),
         variacion=f"{signo}{html.escape(moneda)}{abs(variacion):,}",
         tendencia="negative" if variacion < 0 else "positive" if variacion > 0 else "neutral",
+        **rotulos,
     )
     if hasattr(st, "iframe"):
         st.iframe(contenido, height="content")
     else:
         components.html(contenido, height=610, scrolling=True)
+
+
+def mostrar_saludo(saludo: str, corte: str) -> None:
+    """Tarjeta del saludo que abre la conversación: solo texto y su botón de copiar."""
+    contenido = ui.result_card(
+        pais="Saludo", corte=html.escape(corte) + " · se envía primero", archivo="", pagina="",
+        mensaje=html.escape(saludo), imagen="", variacion="", tendencia="neutral", modo="saludo",
+    )
+    if hasattr(st, "iframe"):
+        st.iframe(contenido, height="content")
+    else:
+        components.html(contenido, height=250, scrolling=True)
 
 
 with st.sidebar:
@@ -196,11 +227,12 @@ if valid:
 if alertas:
     ui.results_summary(alertas, result["cortes"], len(result["lecturas"]))
     labels = [f"{a['pais']} · {a['corte']}" for a in alertas]
-    selected = st.multiselect("Países a incluir", labels, default=labels, key=f"countries_{current}",
+    opciones = list(dict.fromkeys(labels))  # recuperación y trámites de un país comparten etiqueta
+    selected = st.multiselect("Países a incluir", opciones, default=opciones, key=f"countries_{current}",
                              placeholder="Elige los países que quieres revisar y descargar")
     visibles = [a for a, label in zip(alertas, labels) if label in selected]
     if visibles:
-        paquete, mensajes = bundle(visibles)
+        paquete, mensajes = bundle(visibles, result.get("saludo", ""))
         with st.container(key="downloads"):
             zip_col, text_col, info_col = st.columns([1.25, 1.25, 1.5], vertical_alignment="center")
             stamp = result["cortes"][-1].replace("/", "-")
@@ -210,6 +242,8 @@ if alertas:
                                      icon=":material/download:", width="stretch")
             info_col.caption(f"{len(visibles)} mensajes con sus imágenes originales del PDF")
         ui.whatsapp_hint()
+        if result.get("saludo"):
+            mostrar_saludo(result["saludo"], result["saludo_corte"])
         for alerta in visibles:
             mostrar_tarjeta(alerta)
     else:

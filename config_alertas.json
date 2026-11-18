@@ -19,13 +19,13 @@
   "dpi_imagen": 150,
   "_orden": "Orden en que salen los mensajes.",
   "orden": [
+    "México",
     "Guatemala",
     "El Salvador",
     "Honduras",
     "Nicaragua",
     "Perú",
-    "Colombia",
-    "México"
+    "Colombia"
   ],
   "paises": {
     "México": {

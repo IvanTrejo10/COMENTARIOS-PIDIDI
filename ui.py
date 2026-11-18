@@ -94,16 +94,22 @@ def results_summary(alertas, cuts, files):
 
 
 def whatsapp_hint():
-    put(f'<div class="whatsapp-hint">{icon("message", 20)}<p><strong>Para compartir en WhatsApp</strong> Copia la imagen, pégala en el chat y agrega el texto como comentario antes de enviar.</p></div>')
+    put(f'<div class="whatsapp-hint">{icon("message", 20)}<p><strong>Para compartir en WhatsApp</strong> Envía primero el saludo. Después, en cada tarjeta, copia la imagen, pégala en el chat y agrega el texto como comentario antes de enviar.</p></div>')
 
 
 def footer():
     put('<footer class="footer"><strong>DATA <span>/</span> Recuperación</strong><span>México + LATAM · Reportes que se convierten en acción.</span></footer>')
 
 
-def result_card(*, pais, corte, archivo, pagina, mensaje, imagen, variacion, tendencia):
+def result_card(*, pais, corte, archivo, pagina, mensaje, imagen, variacion, tendencia,
+                rotulo_variacion="Variación en recuperación", rotulo_imagen="IMAGEN DEL REPORTE · BOTTOM / TOP",
+                alt=None, descarga=None, modo=""):
+    """Tarjeta de un mensaje. Por defecto es la de recuperación; los rótulos cambian para la de
+    trámites (modo="tramites") y modo="saludo" la deja sin imagen (solo el texto y su botón de copiar)."""
     template = (Path(__file__).parent / "assets" / "result_card.html").read_text(encoding="utf-8")
-    for key, value in {"PAIS": pais, "CORTE": corte, "ARCHIVO": archivo, "PAGINA": pagina,
+    for key, value in {"MODO": modo, "ROTULO_VAR": rotulo_variacion, "ROTULO_IMG": rotulo_imagen,
+                       "ALT": alt or f"Tablas Bottom y Top de {pais}", "DESCARGA": descarga or f"{pais}_reporte.png",
+                       "PAIS": pais, "CORTE": corte, "ARCHIVO": archivo, "PAGINA": pagina,
                        "MENSAJE": mensaje, "IMAGEN": imagen, "VARIACION": variacion, "TENDENCIA": tendencia}.items():
         template = template.replace("__" + key + "__", str(value))
     return template
