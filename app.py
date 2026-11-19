@@ -19,7 +19,7 @@ import alertas_cobranza as motor
 import ui
 
 st.set_page_config(page_title="DATA · Alertas de recuperación", page_icon=":material/mark_chat_unread:",
-                   layout="wide", initial_sidebar_state="expanded")
+                   layout="wide", initial_sidebar_state="collapsed")
 ui.apply_styles()
 
 
@@ -99,7 +99,7 @@ def bundle(alertas: list[dict], saludo: str = "") -> tuple[bytes, str]:
     return buffer.getvalue(), mensajes
 
 
-def mostrar_tarjeta(alerta: dict) -> None:
+def mostrar_tarjeta(alerta: dict, index: int = 0) -> None:
     variacion = alerta["variacion_total"]
     tramites = alerta.get("tipo") == "tramites"  # hoja Entregado: la variación es de créditos, sin moneda
     moneda = "" if tramites else motor.CONFIG_DEFECTO["paises"].get(alerta["pais"], {}).get("moneda", "$")
@@ -115,12 +115,14 @@ def mostrar_tarjeta(alerta: dict) -> None:
         mensaje=html.escape(alerta["mensaje"]), imagen=base64.b64encode(alerta["png"]).decode("ascii"),
         variacion=f"{signo}{html.escape(moneda)}{abs(variacion):,}",
         tendencia="negative" if variacion < 0 else "positive" if variacion > 0 else "neutral",
+        region=alerta.get("region", "latam"),
+        index=index,
         **rotulos,
     )
     if hasattr(st, "iframe"):
         st.iframe(contenido, height="content")
     else:
-        components.html(contenido, height=610, scrolling=True)
+        components.html(contenido, height=640, scrolling=True)
 
 
 def mostrar_saludo(saludo: str, corte: str) -> None:
@@ -146,7 +148,7 @@ with st.sidebar:
                     "4. Pega ambos en tu conversación de WhatsApp.")
     ui.sidebar_note()
 
-ui.topbar()
+topbar_slot = st.empty()
 ui.hero()
 workflow_slot = st.empty()
 ui.section("cargar-pdf", "Carga tus reportes", "Dos espacios, un mismo flujo. Puedes trabajar con una región o con ambas.", "upload")
@@ -175,7 +177,7 @@ except motor.ErrorAlertas as exc:
 current = fingerprint(sources, cfg_json)
 loaded = sum(source is not None for source in sources.values())
 with st.container(key="generate_panel"):
-    copy_col, button_col = st.columns([2.2, 1], vertical_alignment="center")
+    copy_col, button_col = st.columns([1.85, 1.15], vertical_alignment="center")
     with copy_col:
         ui.action_summary(loaded)
     with button_col:
@@ -202,6 +204,8 @@ generated = st.session_state.get("generated")
 valid = generated is not None and generated["fingerprint"] == current
 result = generated["result"] if valid else None
 alertas = result["alertas"] if result else []
+with topbar_slot.container():
+    ui.topbar(loaded, len(alertas), result["cortes"] if result else [])
 with workflow_slot.container():
     ui.workflow(loaded, bool(alertas))
 with sidebar_status.container():
@@ -244,8 +248,8 @@ if alertas:
         ui.whatsapp_hint()
         if result.get("saludo"):
             mostrar_saludo(result["saludo"], result["saludo_corte"])
-        for alerta in visibles:
-            mostrar_tarjeta(alerta)
+        for idx, alerta in enumerate(visibles):
+            mostrar_tarjeta(alerta, idx)
     else:
         st.info("Selecciona al menos un país para mostrar sus mensajes y habilitar las descargas.")
 elif valid and not generated["errors"]:
